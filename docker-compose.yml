@@ -1,0 +1,110 @@
+# EYL Dashboard — hardened compose setup.
+#
+#   docker compose up -d --build                 # app only, on 127.0.0.1:3000
+#   docker compose --profile proxy up -d --build # app + Caddy (auto-HTTPS) on 80/443
+#
+# Secrets come from .env.local (gitignored). See DEPLOY.md.
+
+services:
+  dashboard:
+    build:
+      context: .
+    image: eyl-dashboard:latest
+    container_name: eyl-dashboard
+    restart: unless-stopped
+
+    # Secrets / config live in .env.local — never baked into the image.
+    # format: raw disables Compose's variable interpolation on the file, so
+    # secrets containing a literal "$" (e.g. a DB password) are passed verbatim.
+    env_file:
+      - path: .env.local
+        format: raw
+    environment:
+      NODE_ENV: production
+
+    # Bound to loopback only: not reachable from the network directly.
+    # When running the `proxy` profile, Caddy reaches it over the internal
+    # network instead, so you can comment this out for a proxy-only deploy.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    # ---- hardening ----
+    read_only: true                 # immutable root filesystem
+    security_opt:
+      - no-new-privileges:true      # block setuid privilege escalation
+    cap_drop:
+      - ALL                         # drop all Linux capabilities (none needed)
+    # Writable scratch space the Next.js standalone server may touch at runtime.
+    # mode 01777 (sticky, world-writable) so the non-root `nextjs` user can write.
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+      - type: tmpfs
+        target: /app/.next/cache
+        tmpfs:
+          mode: 01777
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - eyl
+
+  # Optional edge: terminates TLS, sets security headers, proxies to dashboard.
+  # Enable with:  docker compose --profile proxy up -d
+  caddy:
+    image: caddy:2-alpine
+    container_name: eyl-caddy
+    restart: unless-stopped
+    profiles: ["proxy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Set DASHBOARD_DOMAIN in .env.local for real TLS; defaults to localhost
+      # (Caddy issues a local self-signed cert) if unset.
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - eyl
+
+networks:
+  eyl:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

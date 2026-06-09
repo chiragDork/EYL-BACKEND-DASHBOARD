@@ -139,7 +139,30 @@ docker build -t eyl-dashboard .
 docker run -p 3000:3000 --env-file .env.local eyl-dashboard
 ```
 
-The image uses Next.js standalone output and runs `node server.js`.
+The image uses Next.js standalone output and runs `node server.js`, executes as a
+non-root user, and ships a `HEALTHCHECK` against `/api/health`.
+
+### Hardened deploy (Docker Compose)
+
+For self-hosting, a hardened `docker-compose.yml` is included:
+
+```bash
+docker compose up -d --build                  # app only, on 127.0.0.1:3000
+docker compose --profile proxy up -d --build  # app + Caddy (auto-HTTPS) on 80/443
+```
+
+Applied hardening:
+
+- **Non-root** runtime user, `no-new-privileges`, **all Linux capabilities dropped**
+- **Read-only root filesystem** (only `/tmp` and `/app/.next/cache` are writable tmpfs)
+- **Resource limits** (1 CPU / 512 MB) and **log rotation** (10 MB × 3)
+- Container **healthcheck** wired into Compose; Caddy waits for healthy before routing
+- **Security headers** at the app (`next.config.mjs`) and edge (`deploy/Caddyfile`), plus HSTS over TLS
+- Secrets passed via `env_file` with `format: raw` so values containing `$` aren't mangled by Compose interpolation
+- App bound to loopback unless the `proxy` profile (Caddy, automatic Let's Encrypt TLS) is enabled
+
+See [`DEPLOY.md`](DEPLOY.md) for the full runbook and the remaining
+production-readiness gaps (secrets rotation, real auth, etc.).
 
 ---
 
